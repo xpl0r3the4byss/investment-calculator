@@ -9,6 +9,46 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 
+# ---------------------------------------------------------------------------
+# Acorns portfolio definitions
+# ---------------------------------------------------------------------------
+ACORNS_PORTFOLIOS = {
+    "Aggressive (100% stocks)": {
+        "VOO": 0.55,
+        "IXUS": 0.30,
+        "IJH": 0.10,
+        "IJR": 0.05,
+    },
+    "Moderately Aggressive (80% stocks / 20% bonds)": {
+        "VOO": 0.47,
+        "IXUS": 0.24,
+        "IJH": 0.06,
+        "IJR": 0.03,
+        "AGG": 0.14,
+        "ISTB": 0.06,
+    },
+    "Moderate (70% stocks / 30% bonds)": {
+        "VOO": 0.35,
+        "IXUS": 0.18,
+        "IJH": 0.05,
+        "IJR": 0.02,
+        "AGG": 0.28,
+        "ISTB": 0.12,
+    },
+    "Moderately Conservative (40% stocks / 60% bonds)": {
+        "VOO": 0.20,
+        "IXUS": 0.12,
+        "IJH": 0.05,
+        "IJR": 0.03,
+        "AGG": 0.40,
+        "ISTB": 0.20,
+    },
+    "Conservative (100% bonds)": {
+        "AGG": 0.60,
+        "ISTB": 0.40,
+    },
+}
+
 
 def _investment_dates(start_date: date, end_date: date) -> list[date]:
     """
@@ -129,6 +169,77 @@ def calculate_dca(
         "gain": gain,
         "gain_pct": gain_pct,
         "purchases": purchases,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Acorns portfolio DCA
+# ---------------------------------------------------------------------------
+
+def calculate_acorns_dca(
+    portfolio_name: str,
+    monthly_amount: float,
+    start_date: date,
+    end_date: date,
+) -> Optional[dict]:
+    """
+    Calculate DCA for an Acorns portfolio by splitting the monthly amount
+    across constituent ETFs by their target weights.
+
+    Returns a dict with:
+        portfolio_name  – str
+        total_invested  – float
+        final_value     – float
+        gain            – float
+        gain_pct        – float
+        holdings        – dict of ticker -> individual calculate_dca result
+        purchases       – pd.DataFrame with columns:
+                            date, portfolio_value
+                          (combined value across all holdings on each purchase date)
+    """
+    weights = ACORNS_PORTFOLIOS[portfolio_name]
+    holdings = {}
+    errors = []
+
+    for ticker, weight in weights.items():
+        allocated = round(monthly_amount * weight, 6)
+        result = calculate_dca(ticker, allocated, start_date, end_date)
+        if result:
+            holdings[ticker] = result
+        else:
+            errors.append(ticker)
+
+    if not holdings:
+        return None
+
+    # Combine per-purchase-date portfolio values across all holdings
+    combined = None
+    for ticker, result in holdings.items():
+        df = result["purchases"][["date", "portfolio_value"]].copy()
+        df = df.rename(columns={"portfolio_value": ticker})
+        if combined is None:
+            combined = df
+        else:
+            combined = combined.merge(df, on="date", how="outer")
+
+    combined = combined.sort_values("date").fillna(0)
+    value_cols = [t for t in holdings]
+    combined["portfolio_value"] = combined[value_cols].sum(axis=1)
+
+    total_invested = sum(r["total_invested"] for r in holdings.values())
+    final_value = sum(r["final_value"] for r in holdings.values())
+    gain = round(final_value - total_invested, 2)
+    gain_pct = round(gain / total_invested * 100, 2) if total_invested else 0.0
+
+    return {
+        "portfolio_name": portfolio_name,
+        "total_invested": round(total_invested, 2),
+        "final_value": round(final_value, 2),
+        "gain": gain,
+        "gain_pct": gain_pct,
+        "holdings": holdings,
+        "purchases": combined[["date", "portfolio_value"]],
+        "errors": errors,
     }
 
 
