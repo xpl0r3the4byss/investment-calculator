@@ -4,7 +4,8 @@ Each page in pages/ calls render_child_page() with its child config.
 """
 
 import os
-from datetime import date
+import re
+from datetime import date, datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -20,41 +21,80 @@ from children_config import ACORNS_EARLY_PORTFOLIO, MONTHLY_TARGET
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
-def _load_schedule(data_file: str, birth_date: date) -> pd.DataFrame:
-    """Load transaction history from CSV, or return a starter row."""
+def _parse_date_str(s: str) -> date | None:
+    """
+    Parse a date string typed by the user. Accepts:
+      073126        → 07/31/2026  (MMDDYY)
+      07312026      → 07/31/2026  (MMDDYYYY)
+      07/31/26      → 07/31/2026
+      07/31/2026    → 07/31/2026
+      07-31-26      → 07/31/2026
+      2026-07-31    → 07/31/2026  (ISO, used internally)
+    """
+    if not s or not str(s).strip():
+        return None
+    s = str(s).strip()
+
+    # 6 digits: MMDDYY
+    if re.fullmatch(r"\d{6}", s):
+        try:
+            return date(2000 + int(s[4:6]), int(s[0:2]), int(s[2:4]))
+        except ValueError:
+            return None
+
+    # 8 digits: MMDDYYYY
+    if re.fullmatch(r"\d{8}", s):
+        try:
+            return date(int(s[4:8]), int(s[0:2]), int(s[2:4]))
+        except ValueError:
+            return None
+
+    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%m-%d-%y", "%m-%d-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+
+    return None
+
+
+def _load_schedule(data_file: str) -> pd.DataFrame:
+    """Load transaction history from CSV as strings, or return an empty table."""
     if os.path.exists(data_file) and os.path.getsize(data_file) > 0:
-        df = pd.read_csv(data_file)
-        df["date"] = pd.to_datetime(df["date"]).dt.date
-        df["amount"] = df["amount"].astype(float)
+        df = pd.read_csv(data_file, dtype=str).fillna("")
+        # Normalise date strings to ISO format for consistent display
+        df["date"] = df["date"].apply(
+            lambda s: _parse_date_str(s).strftime("%Y-%m-%d") if _parse_date_str(s) else s
+        )
         if "type" not in df.columns:
             df["type"] = "Deposit"
         if "notes" not in df.columns:
             df["notes"] = ""
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
         return df[["date", "type", "amount", "notes"]]
-    # Default: just the birthday deposit
-    return pd.DataFrame({
-        "date":   [birth_date],
-        "type":   ["Deposit"],
-        "amount": [MONTHLY_TARGET],
-        "notes":  ["Birthday"],
-    })
+    return pd.DataFrame(columns=["date", "type", "amount", "notes"])
 
 
-def _to_schedule(df: pd.DataFrame) -> list[tuple[date, float]]:
-    """Convert an edited dataframe to a list of (date, signed_amount) pairs.
-    Deposits are positive; withdrawals are negative."""
+def _to_schedule(df: pd.DataFrame) -> tuple[list[tuple[date, float]], list[str]]:
+    """Convert an edited dataframe to (schedule, errors).
+    schedule: list of (date, signed_amount) — deposits positive, withdrawals negative.
+    errors: list of rows that couldn't be parsed."""
     pairs = []
+    errors = []
     for _, row in df.iterrows():
-        d = row["date"]
-        if hasattr(d, "date"):
-            d = d.date()
-        elif isinstance(d, str):
-            d = date.fromisoformat(d)
-        amount = float(row["amount"])
+        d = _parse_date_str(str(row["date"]))
+        if d is None:
+            errors.append(f"Cannot parse date: '{row['date']}'")
+            continue
+        try:
+            amount = float(row["amount"])
+        except (ValueError, TypeError):
+            errors.append(f"Cannot parse amount: '{row['amount']}'")
+            continue
         if str(row.get("type", "Deposit")).strip().lower() == "withdrawal":
             amount = -amount
         pairs.append((d, amount))
-    return sorted(pairs, key=lambda x: x[0])
+    return sorted(pairs, key=lambda x: x[0]), errors
 
 
 def render_child_page(child: dict) -> None:
@@ -91,13 +131,15 @@ def render_child_page(child: dict) -> None:
     )
 
     os.makedirs(DATA_DIR, exist_ok=True)
-    saved_df = _load_schedule(data_file, birth_date)
+    saved_df = _load_schedule(data_file)
+
+    st.caption("Type dates as **MMDDYY** (e.g. `073126`), `MM/DD/YY`, or `YYYY-MM-DD`. Amount is always positive — use the Type column for withdrawals.")
 
     edited_df = st.data_editor(
         saved_df,
         column_config={
-            "date":   st.column_config.DateColumn("Date", format="YYYY-MM-DD", required=True),
-            "type":   st.column_config.SelectboxColumn("Type", options=["Deposit", "Withdrawal"], required=True),
+            "date":   st.column_config.TextColumn("Date", help="MMDDYY, MM/DD/YY, or YYYY-MM-DD"),
+            "type":   st.column_config.SelectboxColumn("Type", options=["Deposit", "Withdrawal"], required=True, default="Deposit"),
             "amount": st.column_config.NumberColumn("Amount ($)", format="$%.2f", min_value=0.01, required=True),
             "notes":  st.column_config.TextColumn("Notes"),
         },
@@ -111,9 +153,17 @@ def render_child_page(child: dict) -> None:
     run  = btn_col2.button("Calculate", type="primary", use_container_width=True)
 
     if save:
-        clean = edited_df.dropna(subset=["date", "amount"])
-        clean.to_csv(data_file, index=False)
-        st.success("Saved!")
+        clean = edited_df.dropna(subset=["date", "amount"]).copy()
+        # Parse and normalise dates to ISO before writing
+        clean["date"] = clean["date"].apply(
+            lambda s: _parse_date_str(str(s)).strftime("%Y-%m-%d") if _parse_date_str(str(s)) else s
+        )
+        bad_dates = clean[clean["date"].apply(lambda s: _parse_date_str(str(s)) is None)]
+        if not bad_dates.empty:
+            st.error(f"Could not parse {len(bad_dates)} date(s) — check format and try again.")
+        else:
+            clean.to_csv(data_file, index=False)
+            st.success("Saved!")
 
     if not run:
         st.stop()
@@ -123,10 +173,16 @@ def render_child_page(child: dict) -> None:
     if "type" not in clean_df.columns:
         clean_df["type"] = "Deposit"
     if clean_df.empty:
-        st.warning("No investments to calculate.")
+        st.warning("No transactions to calculate.")
         st.stop()
 
-    schedule = _to_schedule(clean_df)
+    schedule, parse_errors = _to_schedule(clean_df)
+    if parse_errors:
+        for err in parse_errors:
+            st.warning(err)
+    if not schedule:
+        st.error("No valid transactions to calculate.")
+        st.stop()
 
     # ---- Fetch data ----
     progress = st.progress(0, text="Calculating actual portfolio…")
@@ -199,17 +255,12 @@ def render_child_page(child: dict) -> None:
         hovertemplate="Actual value: $%{y:,.2f}<extra></extra>",
     ))
 
-    # Cumulative net invested (deposits positive, withdrawals negative)
-    sorted_df = clean_df.sort_values("date").copy()
-    sorted_df["signed"] = sorted_df.apply(
-        lambda r: -float(r["amount"]) if str(r.get("type", "Deposit")).lower() == "withdrawal"
-                  else float(r["amount"]),
-        axis=1,
-    )
-    cum_amounts = sorted_df["signed"].cumsum().tolist()
+    # Cumulative net invested — build from the parsed schedule
+    sched_df = pd.DataFrame(schedule, columns=["date", "signed_amount"]).sort_values("date")
+    sched_df["cum_invested"] = sched_df["signed_amount"].cumsum()
     fig.add_trace(go.Scatter(
-        x=list(sorted_df["date"]),
-        y=cum_amounts,
+        x=sched_df["date"],
+        y=sched_df["cum_invested"],
         mode="lines",
         name="Net Invested",
         line=dict(color="#2196F3", width=1, dash="dot"),
@@ -249,15 +300,18 @@ def render_child_page(child: dict) -> None:
 
     # ---- Transaction breakdown ----
     with st.expander("Transaction breakdown"):
-        disp = clean_df[["date", "type", "amount", "notes"]].copy().sort_values("date")
-        disp["signed"] = disp.apply(
-            lambda r: -float(r["amount"]) if str(r.get("type", "Deposit")).lower() == "withdrawal"
-                      else float(r["amount"]),
-            axis=1,
-        )
-        disp["cum_invested"] = disp["signed"].cumsum()
-        disp = disp.drop(columns=["signed"])
+        disp = sched_df.copy()
+        # Re-join notes/type from clean_df by matching on parsed date
+        type_notes = clean_df.copy()
+        type_notes["_date"] = type_notes["date"].apply(lambda s: _parse_date_str(str(s)))
+        type_notes = type_notes.dropna(subset=["_date"])
+        type_map  = dict(zip(type_notes["_date"], type_notes.get("type",  pd.Series(dtype=str))))
+        notes_map = dict(zip(type_notes["_date"], type_notes.get("notes", pd.Series(dtype=str))))
+        disp["type"]  = disp["date"].map(type_map).fillna("Deposit")
+        disp["notes"] = disp["date"].map(notes_map).fillna("")
+        disp["date"]  = disp["date"].apply(lambda d: d.strftime("%Y-%m-%d"))
+        disp["amount_disp"] = disp["signed_amount"].abs().map("${:,.2f}".format)
+        disp["cum_disp"]    = disp["cum_invested"].map("${:,.2f}".format)
+        disp = disp[["date", "type", "amount_disp", "notes", "cum_disp"]]
         disp.columns = ["Date", "Type", "Amount ($)", "Notes", "Net Invested ($)"]
-        disp["Amount ($)"]      = disp["Amount ($)"].map("${:,.2f}".format)
-        disp["Net Invested ($)"] = disp["Net Invested ($)"].map("${:,.2f}".format)
         st.dataframe(disp, use_container_width=True, hide_index=True)
