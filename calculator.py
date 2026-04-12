@@ -266,6 +266,145 @@ def calculate_acorns_dca(
 
 
 # ---------------------------------------------------------------------------
+# Actual-schedule calculations (from real deposit history)
+# ---------------------------------------------------------------------------
+
+def _calculate_from_ticker_schedule(
+    ticker: str,
+    schedule: list[tuple[date, float]],
+    end_date: date,
+) -> Optional[dict]:
+    """
+    Calculate portfolio value for a single ticker from an actual deposit schedule.
+    schedule: list of (date, amount) pairs — any irregular cadence.
+    """
+    if not schedule:
+        return None
+
+    start_date = min(d for d, _ in schedule)
+    fetch_start = start_date - timedelta(days=7)
+    fetch_end = end_date + timedelta(days=1)
+
+    raw = yf.download(
+        ticker,
+        start=fetch_start.strftime("%Y-%m-%d"),
+        end=fetch_end.strftime("%Y-%m-%d"),
+        auto_adjust=True,
+        progress=False,
+    )
+    if raw.empty:
+        return None
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+
+    closes = raw["Close"].dropna()
+    closes.index = pd.to_datetime(closes.index).normalize()
+    full_index = pd.date_range(start=closes.index.min(), end=closes.index.max(), freq="D")
+    closes = closes.reindex(full_index).ffill()
+
+    rows = []
+    cumulative_shares = 0.0
+
+    for inv_date, amount in sorted(schedule, key=lambda x: x[0]):
+        ts = pd.Timestamp(inv_date)
+        if ts < closes.index.min() or ts > closes.index.max():
+            continue
+        price = float(closes.loc[ts])
+        shares = amount / price
+        cumulative_shares += shares
+        rows.append({
+            "date": inv_date,
+            "amount": round(amount, 2),
+            "price": round(price, 4),
+            "shares_bought": round(shares, 6),
+            "cumulative_shares": round(cumulative_shares, 6),
+            "portfolio_value": round(cumulative_shares * price, 2),
+        })
+
+    if not rows:
+        return None
+
+    purchases = pd.DataFrame(rows)
+    end_ts = pd.Timestamp(end_date)
+    if end_ts > closes.index.max():
+        end_ts = closes.index.max()
+    final_price = float(closes.loc[end_ts])
+    final_value = round(cumulative_shares * final_price, 2)
+    total_invested = round(sum(amt for _, amt in schedule), 2)
+    gain = round(final_value - total_invested, 2)
+    gain_pct = round(gain / total_invested * 100, 2) if total_invested else 0.0
+
+    return {
+        "ticker": ticker,
+        "total_invested": total_invested,
+        "final_value": final_value,
+        "gain": gain,
+        "gain_pct": gain_pct,
+        "purchases": purchases,
+    }
+
+
+def calculate_acorns_from_schedule(
+    portfolio_name: str,
+    schedule: list[tuple[date, float]],
+    end_date: date,
+) -> Optional[dict]:
+    """
+    Calculate Acorns portfolio value from an actual deposit schedule.
+
+    schedule: list of (date, amount) pairs representing real deposits.
+    Each deposit is split across ETFs by the portfolio's target weights.
+
+    Returns the same structure as calculate_acorns_dca.
+    """
+    if not schedule:
+        return None
+
+    weights = ACORNS_PORTFOLIOS[portfolio_name]
+    start_date = min(d for d, _ in schedule)
+    holdings = {}
+    errors = []
+
+    for ticker, weight in weights.items():
+        ticker_schedule = [(d, round(amt * weight, 6)) for d, amt in schedule]
+        result = _calculate_from_ticker_schedule(ticker, ticker_schedule, end_date)
+        if result:
+            holdings[ticker] = result
+        else:
+            errors.append(ticker)
+
+    if not holdings:
+        return None
+
+    combined = None
+    for ticker, result in holdings.items():
+        df = result["purchases"][["date", "portfolio_value"]].copy()
+        df = df.rename(columns={"portfolio_value": ticker})
+        combined = df if combined is None else combined.merge(df, on="date", how="outer")
+
+    combined = combined.sort_values("date").fillna(0)
+    value_cols = list(holdings.keys())
+    combined["portfolio_value"] = combined[value_cols].sum(axis=1)
+
+    total_invested = round(sum(amt for _, amt in schedule), 2)
+    final_value = round(sum(r["final_value"] for r in holdings.values()), 2)
+    gain = round(final_value - total_invested, 2)
+    gain_pct = round(gain / total_invested * 100, 2) if total_invested else 0.0
+
+    return {
+        "portfolio_name": portfolio_name,
+        "total_invested": total_invested,
+        "final_value": final_value,
+        "gain": gain,
+        "gain_pct": gain_pct,
+        "holdings": holdings,
+        "purchases": combined[["date", "portfolio_value"]],
+        "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Catch-up planner helpers
 # ---------------------------------------------------------------------------
 
