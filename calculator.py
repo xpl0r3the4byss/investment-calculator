@@ -244,6 +244,92 @@ def calculate_acorns_dca(
 
 
 # ---------------------------------------------------------------------------
+# Catch-up planner helpers
+# ---------------------------------------------------------------------------
+
+def should_have_invested(birth_date: date, monthly_contribution: float, end_date: date) -> float:
+    """Total that should have been invested at monthly_contribution/month from birth_date to end_date."""
+    return round(len(_investment_dates(birth_date, end_date)) * monthly_contribution, 2)
+
+
+def generate_catchup_plan(
+    children: list[dict],
+    monthly_budget: float,
+    ongoing_per_child: float,
+) -> dict | None:
+    """
+    Generate a month-by-month principal catch-up plan, allocating to oldest child first.
+
+    children: list of {name, birth_date, principal_gap}
+
+    Returns:
+        catch_up_budget   – float: monthly amount available after ongoing contributions
+        priority_order    – list of names oldest-first
+        close_months      – {name: date} when each child's gap closes
+        monthly_records   – list of {month, allocations: {name: $}, remaining: {name: $}}
+        gap_over_time     – pd.DataFrame with columns: month, <name1>, <name2>, ...
+    Returns None if catch_up_budget <= 0.
+    """
+    n = len(children)
+    catch_up_budget = round(monthly_budget - ongoing_per_child * n, 2)
+    if catch_up_budget <= 0:
+        return None
+
+    sorted_children = sorted(children, key=lambda c: c["birth_date"])
+    names = [c["name"] for c in sorted_children]
+    remaining = {c["name"]: max(0.0, round(c["principal_gap"], 2)) for c in sorted_children}
+    close_months: dict[str, date] = {}
+
+    # Start from next calendar month
+    today = date.today()
+    m, y = today.month + 1, today.year
+    if m > 12:
+        m, y = 1, y + 1
+    current = date(y, m, 1)
+
+    monthly_records = []
+    gap_rows = []
+
+    while any(g > 0.005 for g in remaining.values()):
+        allocations: dict[str, float] = {}
+        leftover = catch_up_budget
+
+        for c in sorted_children:
+            name = c["name"]
+            if remaining[name] > 0.005 and leftover > 0.005:
+                alloc = round(min(leftover, remaining[name]), 2)
+                allocations[name] = alloc
+                remaining[name] = round(remaining[name] - alloc, 2)
+                leftover = round(leftover - alloc, 2)
+                if remaining[name] <= 0.005 and name not in close_months:
+                    close_months[name] = current
+                    remaining[name] = 0.0
+
+        monthly_records.append({
+            "month": current,
+            "allocations": allocations,
+            "remaining": dict(remaining),
+        })
+        gap_rows.append({"month": current, **{name: remaining.get(name, 0.0) for name in names}})
+
+        m, y = current.month + 1, current.year
+        if m > 12:
+            m, y = 1, y + 1
+        current = date(y, m, 1)
+
+        if len(monthly_records) > 240:  # 20-year safety cap
+            break
+
+    return {
+        "catch_up_budget": catch_up_budget,
+        "priority_order": names,
+        "close_months": close_months,
+        "monthly_records": monthly_records,
+        "gap_over_time": pd.DataFrame(gap_rows),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Quick CLI sanity-check
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
