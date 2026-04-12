@@ -202,12 +202,12 @@ def render_child_page(child: dict) -> None:
         },
         num_rows="dynamic",
         hide_index=True,
-        use_container_width=True,
+        width='stretch',
     )
 
     btn_col1, btn_col2, _ = st.columns([1, 1, 5])
-    save = btn_col1.button("Save", use_container_width=True)
-    run  = btn_col2.button("Calculate", type="primary", use_container_width=True)
+    save = btn_col1.button("Save", width='stretch')
+    run  = btn_col2.button("Calculate", type="primary", width='stretch')
 
     if save:
         clean = edited_df.dropna(subset=["date", "amount"]).copy()
@@ -364,7 +364,7 @@ def render_child_page(child: dict) -> None:
         height=420,
         margin=dict(l=0, r=0, t=10, b=0),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # ---- Transaction breakdown ----
     with st.expander("Transaction breakdown"):
@@ -382,4 +382,4 @@ def render_child_page(child: dict) -> None:
         disp["cum_disp"]    = disp["cum_invested"].map("${:,.2f}".format)
         disp = disp[["date", "type", "amount_disp", "notes", "cum_disp"]]
         disp.columns = ["Date", "Type", "Amount ($)", "Notes", "Net Cash In ($)"]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        st.dataframe(disp, width='stretch', hide_index=True)

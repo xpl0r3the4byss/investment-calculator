@@ -132,7 +132,7 @@ else:
         "get the latest figure from the **Acorns Portfolio** mode."
     )
 
-run = st.sidebar.button("Calculate", type="primary", use_container_width=True)
+run = st.sidebar.button("Calculate", type="primary", width='stretch')
 
 # ===========================================================================
 # CATCH-UP PLANNER
@@ -162,7 +162,7 @@ if mode == "Catch-up Planner":
             "Target Value ($)": st.column_config.NumberColumn("Target Value ($)", format="$%.2f", min_value=0.0),
         },
         hide_index=True,
-        use_container_width=True,
+        width='stretch',
         num_rows="dynamic",
     )
 
@@ -220,7 +220,7 @@ if mode == "Catch-up Planner":
     display_cols = ["Name", "Age", "Yrs to 21", "Should Have Invested",
                     "Actually Invested", "Principal Gap",
                     "Target Value", "Current Value", "Value Gap"]
-    st.dataframe(pd.DataFrame(gap_rows)[display_cols], use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(gap_rows)[display_cols], width='stretch', hide_index=True)
 
     total_principal_gap = sum(c["principal_gap"] for c in catchup_children)
     total_value_gap = sum(
@@ -279,7 +279,7 @@ if mode == "Catch-up Planner":
             "Months Away": months_str,
         })
 
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
 
     # Remaining gap chart
     st.markdown("**Remaining principal gap over time**")
@@ -302,7 +302,7 @@ if mode == "Catch-up Planner":
         height=350,
         margin=dict(l=0, r=0, t=10, b=0),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Month-by-month breakdown
     with st.expander("Month-by-month allocation breakdown"):
@@ -317,7 +317,7 @@ if mode == "Catch-up Planner":
                 rem = rec["remaining"].get(name, 0.0)
                 row[f"{name} gap"] = f"${rem:,.2f}"
             rows.append(row)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     # -----------------------------------------------------------------------
     # Phase 2 preview: value gap
@@ -341,7 +341,7 @@ if mode == "Catch-up Planner":
             "Actual Value Today": f"${current:,.2f}",
             "Value Gap": f"${vgap:,.2f}",
         })
-    st.dataframe(pd.DataFrame(phase2_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(phase2_rows), width='stretch', hide_index=True)
     st.caption(f"Total value gap across all children: ${total_value_gap:,.2f}")
 
 # ===========================================================================
@@ -379,7 +379,7 @@ elif mode == "Acorns Portfolio":
         "Final Value": f"${r['final_value']:,.2f}",
         "Gain / Loss": f"${r['gain']:,.2f}",
         "Return %": f"{r['gain_pct']:,.1f}%",
-    }]), use_container_width=True, hide_index=True)
+    }]), width='stretch', hide_index=True)
 
     st.subheader("Holdings Breakdown")
     holdings_rows = []
@@ -394,7 +394,7 @@ elif mode == "Acorns Portfolio":
             "Gain / Loss": f"${hr['gain']:,.2f}",
             "Return %": f"{hr['gain_pct']:,.1f}%",
         })
-    st.dataframe(pd.DataFrame(holdings_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(holdings_rows), width='stretch', hide_index=True)
 
     st.subheader("Portfolio Value Over Time")
     fig = go.Figure()
@@ -422,7 +422,7 @@ elif mode == "Acorns Portfolio":
         height=450,
         margin=dict(l=0, r=0, t=10, b=0),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 # ===========================================================================
 # CUSTOM ETFs MODE
@@ -470,7 +470,7 @@ else:
             "Gain / Loss": f"${r['gain']:,.2f}",
             "Return %": f"{r['gain_pct']:,.1f}%",
         })
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
 
     st.subheader("Portfolio Value Over Time")
     fig = go.Figure()
@@ -507,7 +507,7 @@ else:
         height=450,
         margin=dict(l=0, r=0, t=10, b=0),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     st.subheader("Monthly Purchase Breakdown")
     for ticker, r in results.items():
@@ -517,4 +517,4 @@ else:
             df.columns = ["Date", "Price ($)", "Shares Bought", "Cumulative Shares", "Portfolio Value ($)"]
             df["Price ($)"] = df["Price ($)"].map("${:,.4f}".format)
             df["Portfolio Value ($)"] = df["Portfolio Value ($)"].map("${:,.2f}".format)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
