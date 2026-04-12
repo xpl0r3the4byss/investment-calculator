@@ -21,32 +21,39 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
 def _load_schedule(data_file: str, birth_date: date) -> pd.DataFrame:
-    """Load investment history from CSV, or return a starter row."""
+    """Load transaction history from CSV, or return a starter row."""
     if os.path.exists(data_file) and os.path.getsize(data_file) > 0:
         df = pd.read_csv(data_file)
         df["date"] = pd.to_datetime(df["date"]).dt.date
         df["amount"] = df["amount"].astype(float)
+        if "type" not in df.columns:
+            df["type"] = "Deposit"
         if "notes" not in df.columns:
             df["notes"] = ""
-        return df[["date", "amount", "notes"]]
+        return df[["date", "type", "amount", "notes"]]
     # Default: just the birthday deposit
     return pd.DataFrame({
         "date":   [birth_date],
+        "type":   ["Deposit"],
         "amount": [MONTHLY_TARGET],
         "notes":  ["Birthday"],
     })
 
 
 def _to_schedule(df: pd.DataFrame) -> list[tuple[date, float]]:
-    """Convert an edited dataframe to a list of (date, amount) pairs."""
+    """Convert an edited dataframe to a list of (date, signed_amount) pairs.
+    Deposits are positive; withdrawals are negative."""
     pairs = []
     for _, row in df.iterrows():
         d = row["date"]
-        if hasattr(d, "date"):        # datetime → date
+        if hasattr(d, "date"):
             d = d.date()
         elif isinstance(d, str):
             d = date.fromisoformat(d)
-        pairs.append((d, float(row["amount"])))
+        amount = float(row["amount"])
+        if str(row.get("type", "Deposit")).strip().lower() == "withdrawal":
+            amount = -amount
+        pairs.append((d, amount))
     return sorted(pairs, key=lambda x: x[0])
 
 
@@ -77,9 +84,9 @@ def render_child_page(child: dict) -> None:
     st.divider()
 
     # ---- Investment history ----
-    st.subheader("Investment History")
+    st.subheader("Transaction History")
     st.caption(
-        "Enter every deposit you have made or plan to make. "
+        "Enter every deposit and withdrawal. "
         "Click **Save** to persist changes between sessions."
     )
 
@@ -90,6 +97,7 @@ def render_child_page(child: dict) -> None:
         saved_df,
         column_config={
             "date":   st.column_config.DateColumn("Date", format="YYYY-MM-DD", required=True),
+            "type":   st.column_config.SelectboxColumn("Type", options=["Deposit", "Withdrawal"], required=True),
             "amount": st.column_config.NumberColumn("Amount ($)", format="$%.2f", min_value=0.01, required=True),
             "notes":  st.column_config.TextColumn("Notes"),
         },
@@ -112,6 +120,8 @@ def render_child_page(child: dict) -> None:
 
     # ---- Build schedule from edited table ----
     clean_df = edited_df.dropna(subset=["date", "amount"]).copy()
+    if "type" not in clean_df.columns:
+        clean_df["type"] = "Deposit"
     if clean_df.empty:
         st.warning("No investments to calculate.")
         st.stop()
@@ -149,9 +159,11 @@ def render_child_page(child: dict) -> None:
 
     with col_a:
         st.markdown("**Actual**")
-        st.metric("Invested",      f"${actual['total_invested']:,.2f}")
-        st.metric("Current Value", f"${actual['final_value']:,.2f}")
-        st.metric("Gain / Loss",   f"${actual['gain']:,.2f}",
+        st.metric("Total Deposits",    f"${actual['total_deposits']:,.2f}")
+        st.metric("Total Withdrawals", f"${actual['total_withdrawals']:,.2f}")
+        st.metric("Net Invested",      f"${actual['total_invested']:,.2f}")
+        st.metric("Current Value",     f"${actual['final_value']:,.2f}")
+        st.metric("Gain / Loss",       f"${actual['gain']:,.2f}",
                   delta=f"{actual['gain_pct']:.1f}%")
 
     with col_t:
@@ -187,16 +199,21 @@ def render_child_page(child: dict) -> None:
         hovertemplate="Actual value: $%{y:,.2f}<extra></extra>",
     ))
 
-    # Cumulative actual invested (step function on deposit dates)
-    sorted_df  = clean_df.sort_values("date")
-    cum_amounts = sorted_df["amount"].cumsum().tolist()
+    # Cumulative net invested (deposits positive, withdrawals negative)
+    sorted_df = clean_df.sort_values("date").copy()
+    sorted_df["signed"] = sorted_df.apply(
+        lambda r: -float(r["amount"]) if str(r.get("type", "Deposit")).lower() == "withdrawal"
+                  else float(r["amount"]),
+        axis=1,
+    )
+    cum_amounts = sorted_df["signed"].cumsum().tolist()
     fig.add_trace(go.Scatter(
         x=list(sorted_df["date"]),
         y=cum_amounts,
         mode="lines",
-        name="Actual Invested",
+        name="Net Invested",
         line=dict(color="#2196F3", width=1, dash="dot"),
-        hovertemplate="Actual invested: $%{y:,.2f}<extra></extra>",
+        hovertemplate="Net invested: $%{y:,.2f}<extra></extra>",
     ))
 
     if target:
@@ -230,11 +247,17 @@ def render_child_page(child: dict) -> None:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---- Actual purchase breakdown ----
-    with st.expander("Actual deposit breakdown"):
-        disp = clean_df[["date", "amount", "notes"]].copy()
-        disp.insert(2, "cum_invested", disp["amount"].cumsum())
-        disp.columns = ["Date", "Amount ($)", "Cumulative Invested ($)", "Notes"]
-        disp["Amount ($)"]             = disp["Amount ($)"].map("${:,.2f}".format)
-        disp["Cumulative Invested ($)"] = disp["Cumulative Invested ($)"].map("${:,.2f}".format)
+    # ---- Transaction breakdown ----
+    with st.expander("Transaction breakdown"):
+        disp = clean_df[["date", "type", "amount", "notes"]].copy().sort_values("date")
+        disp["signed"] = disp.apply(
+            lambda r: -float(r["amount"]) if str(r.get("type", "Deposit")).lower() == "withdrawal"
+                      else float(r["amount"]),
+            axis=1,
+        )
+        disp["cum_invested"] = disp["signed"].cumsum()
+        disp = disp.drop(columns=["signed"])
+        disp.columns = ["Date", "Type", "Amount ($)", "Notes", "Net Invested ($)"]
+        disp["Amount ($)"]      = disp["Amount ($)"].map("${:,.2f}".format)
+        disp["Net Invested ($)"] = disp["Net Invested ($)"].map("${:,.2f}".format)
         st.dataframe(disp, use_container_width=True, hide_index=True)
