@@ -275,8 +275,10 @@ def _calculate_from_ticker_schedule(
     end_date: date,
 ) -> Optional[dict]:
     """
-    Calculate portfolio value for a single ticker from an actual deposit schedule.
-    schedule: list of (date, amount) pairs — any irregular cadence.
+    Calculate portfolio value for a single ticker from an actual transaction schedule.
+    schedule: list of (date, signed_amount) pairs.
+      Positive amounts = deposits (buy shares).
+      Negative amounts = withdrawals (sell shares at market price).
     """
     if not schedule:
         return None
@@ -311,8 +313,9 @@ def _calculate_from_ticker_schedule(
         if ts < closes.index.min() or ts > closes.index.max():
             continue
         price = float(closes.loc[ts])
+        # Positive = buy, negative = sell
         shares = amount / price
-        cumulative_shares += shares
+        cumulative_shares = max(0.0, cumulative_shares + shares)
         rows.append({
             "date": inv_date,
             "amount": round(amount, 2),
@@ -387,14 +390,18 @@ def calculate_acorns_from_schedule(
     value_cols = list(holdings.keys())
     combined["portfolio_value"] = combined[value_cols].sum(axis=1)
 
-    total_invested = round(sum(amt for _, amt in schedule), 2)
-    final_value = round(sum(r["final_value"] for r in holdings.values()), 2)
-    gain = round(final_value - total_invested, 2)
-    gain_pct = round(gain / total_invested * 100, 2) if total_invested else 0.0
+    total_deposits    = round(sum(amt for _, amt in schedule if amt > 0), 2)
+    total_withdrawals = round(sum(abs(amt) for _, amt in schedule if amt < 0), 2)
+    net_invested      = round(total_deposits - total_withdrawals, 2)
+    final_value       = round(sum(r["final_value"] for r in holdings.values()), 2)
+    gain              = round(final_value - net_invested, 2)
+    gain_pct          = round(gain / net_invested * 100, 2) if net_invested else 0.0
 
     return {
         "portfolio_name": portfolio_name,
-        "total_invested": total_invested,
+        "total_invested": net_invested,       # net for backward compat
+        "total_deposits": total_deposits,
+        "total_withdrawals": total_withdrawals,
         "final_value": final_value,
         "gain": gain,
         "gain_pct": gain_pct,
