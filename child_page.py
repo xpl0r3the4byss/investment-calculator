@@ -20,6 +20,18 @@ from children_config import ACORNS_EARLY_PORTFOLIO, MONTHLY_TARGET
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
+# Transaction types whose cash flows are negative (sell shares / debit account)
+_NEGATIVE_TYPES = {"withdrawal", "cash owed collection", "early match removal"}
+
+_ALL_TYPES = [
+    "Deposit",
+    "Withdrawal",
+    "Dividend",
+    "Early Match",
+    "Early Match Removal",
+    "Cash Owed Collection",
+]
+
 
 def _parse_date_str(s: str) -> date | None:
     """
@@ -77,7 +89,8 @@ def _load_schedule(data_file: str) -> pd.DataFrame:
 
 def _to_schedule(df: pd.DataFrame) -> tuple[list[tuple[date, float]], list[str]]:
     """Convert an edited dataframe to (schedule, errors).
-    schedule: list of (date, signed_amount) — deposits positive, withdrawals negative.
+    schedule: list of (date, signed_amount) — cash in is positive, cash out is negative.
+    All transaction types that debit the account use a negative sign; all credits use positive.
     errors: list of rows that couldn't be parsed."""
     pairs = []
     errors = []
@@ -91,10 +104,45 @@ def _to_schedule(df: pd.DataFrame) -> tuple[list[tuple[date, float]], list[str]]
         except (ValueError, TypeError):
             errors.append(f"Cannot parse amount: '{row['amount']}'")
             continue
-        if str(row.get("type", "Deposit")).strip().lower() == "withdrawal":
+        t = str(row.get("type", "Deposit")).strip().lower()
+        if t in _NEGATIVE_TYPES:
             amount = -amount
         pairs.append((d, amount))
     return sorted(pairs, key=lambda x: x[0]), errors
+
+
+def _compute_breakdown(df: pd.DataFrame) -> dict:
+    """Compute a categorized cash-flow summary from the edited transaction dataframe.
+
+    Returns a dict with:
+        principal_deposits    – sum of Deposit rows (your out-of-pocket contributions)
+        principal_withdrawals – sum of Withdrawal rows (your out-of-pocket reductions)
+        principal_net         – deposits minus withdrawals
+        dividends             – sum of Dividend rows
+        early_match_net       – Early Match minus Early Match Removal (net Acorns matching)
+        fees                  – sum of Cash Owed Collection rows (Acorns subscription fees)
+    """
+    def _col_sum(mask: pd.Series) -> float:
+        return round(
+            pd.to_numeric(df.loc[mask, "amount"], errors="coerce").fillna(0.0).sum(), 2
+        )
+
+    t = df["type"].str.strip().str.lower()
+    principal_deposits    = _col_sum(t == "deposit")
+    principal_withdrawals = _col_sum(t == "withdrawal")
+    dividends             = _col_sum(t == "dividend")
+    early_match           = _col_sum(t == "early match")
+    early_match_removal   = _col_sum(t == "early match removal")
+    fees                  = _col_sum(t == "cash owed collection")
+
+    return {
+        "principal_deposits":    principal_deposits,
+        "principal_withdrawals": principal_withdrawals,
+        "principal_net":         round(principal_deposits - principal_withdrawals, 2),
+        "dividends":             dividends,
+        "early_match_net":       round(early_match - early_match_removal, 2),
+        "fees":                  fees,
+    }
 
 
 def render_child_page(child: dict) -> None:
@@ -126,20 +174,29 @@ def render_child_page(child: dict) -> None:
     # ---- Investment history ----
     st.subheader("Transaction History")
     st.caption(
-        "Enter every deposit and withdrawal. "
+        "Enter every transaction from your Acorns history. "
         "Click **Save** to persist changes between sessions."
     )
 
     os.makedirs(DATA_DIR, exist_ok=True)
     saved_df = _load_schedule(data_file)
 
-    st.caption("Type dates as **MMDDYY** (e.g. `073126`), `MM/DD/YY`, or `YYYY-MM-DD`. Amount is always positive — use the Type column for withdrawals.")
+    st.caption(
+        "Type dates as **MMDDYY** (e.g. `073126`), `MM/DD/YY`, or `YYYY-MM-DD`. "
+        "Amount is always positive — use the Type column to indicate direction. "
+        "**Dividends** and **Early Match** are not counted toward your principal gap."
+    )
 
     edited_df = st.data_editor(
         saved_df,
         column_config={
             "date":   st.column_config.TextColumn("Date", help="MMDDYY, MM/DD/YY, or YYYY-MM-DD"),
-            "type":   st.column_config.SelectboxColumn("Type", options=["Deposit", "Withdrawal"], required=True, default="Deposit"),
+            "type":   st.column_config.SelectboxColumn(
+                "Type",
+                options=_ALL_TYPES,
+                required=True,
+                default="Deposit",
+            ),
             "amount": st.column_config.NumberColumn("Amount ($)", format="$%.2f", min_value=0.01, required=True),
             "notes":  st.column_config.TextColumn("Notes"),
         },
@@ -184,6 +241,9 @@ def render_child_page(child: dict) -> None:
         st.error("No valid transactions to calculate.")
         st.stop()
 
+    # Compute principal breakdown from raw clean_df (before sign conversion)
+    bd = _compute_breakdown(clean_df)
+
     # ---- Fetch data ----
     progress = st.progress(0, text="Calculating actual portfolio…")
     actual = calculate_acorns_from_schedule(ACORNS_EARLY_PORTFOLIO, schedule, today)
@@ -208,18 +268,26 @@ def render_child_page(child: dict) -> None:
     target_gain     = target["gain"]           if target else 0.0
     target_gain_pct = target["gain_pct"]       if target else 0.0
 
-    principal_gap = round(max(0.0, target_invested - actual["total_invested"]), 2)
-    value_gap     = round(max(0.0, target_value    - actual["final_value"]),    2)
+    # Gap is based on your out-of-pocket principal only (excludes dividends/match/fees)
+    principal_gap = round(max(0.0, target_invested - bd["principal_net"]), 2)
+    value_gap     = round(max(0.0, target_value    - actual["final_value"]), 2)
 
     col_a, col_t, col_g = st.columns(3)
 
     with col_a:
         st.markdown("**Actual**")
-        st.metric("Total Deposits",    f"${actual['total_deposits']:,.2f}")
-        st.metric("Total Withdrawals", f"${actual['total_withdrawals']:,.2f}")
-        st.metric("Net Invested",      f"${actual['total_invested']:,.2f}")
-        st.metric("Current Value",     f"${actual['final_value']:,.2f}")
-        st.metric("Gain / Loss",       f"${actual['gain']:,.2f}",
+        st.metric("Your Deposits",       f"${bd['principal_deposits']:,.2f}")
+        if bd["principal_withdrawals"] > 0:
+            st.metric("Your Withdrawals", f"${bd['principal_withdrawals']:,.2f}")
+        st.metric("Net Principal",        f"${bd['principal_net']:,.2f}")
+        if bd["dividends"] > 0:
+            st.metric("Dividends",        f"${bd['dividends']:,.2f}")
+        if bd["early_match_net"] != 0:
+            st.metric("Early Match (net)", f"${bd['early_match_net']:,.2f}")
+        if bd["fees"] > 0:
+            st.metric("Fees Paid",        f"${bd['fees']:,.2f}")
+        st.metric("Current Value",        f"${actual['final_value']:,.2f}")
+        st.metric("Gain / Loss",          f"${actual['gain']:,.2f}",
                   delta=f"{actual['gain_pct']:.1f}%")
 
     with col_t:
@@ -255,16 +323,16 @@ def render_child_page(child: dict) -> None:
         hovertemplate="Actual value: $%{y:,.2f}<extra></extra>",
     ))
 
-    # Cumulative net invested — build from the parsed schedule
+    # Cumulative net cash flows — build from the parsed schedule
     sched_df = pd.DataFrame(schedule, columns=["date", "signed_amount"]).sort_values("date")
     sched_df["cum_invested"] = sched_df["signed_amount"].cumsum()
     fig.add_trace(go.Scatter(
         x=sched_df["date"],
         y=sched_df["cum_invested"],
         mode="lines",
-        name="Net Invested",
+        name="Net Cash In",
         line=dict(color="#2196F3", width=1, dash="dot"),
-        hovertemplate="Net invested: $%{y:,.2f}<extra></extra>",
+        hovertemplate="Net cash in: $%{y:,.2f}<extra></extra>",
     ))
 
     if target:
@@ -313,5 +381,5 @@ def render_child_page(child: dict) -> None:
         disp["amount_disp"] = disp["signed_amount"].abs().map("${:,.2f}".format)
         disp["cum_disp"]    = disp["cum_invested"].map("${:,.2f}".format)
         disp = disp[["date", "type", "amount_disp", "notes", "cum_disp"]]
-        disp.columns = ["Date", "Type", "Amount ($)", "Notes", "Net Invested ($)"]
+        disp.columns = ["Date", "Type", "Amount ($)", "Notes", "Net Cash In ($)"]
         st.dataframe(disp, use_container_width=True, hide_index=True)
