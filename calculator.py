@@ -50,27 +50,47 @@ ACORNS_PORTFOLIOS = {
 }
 
 
-def _investment_dates(start_date: date, end_date: date) -> list[date]:
+def _investment_dates(start_date: date, end_date: date, birthday_mode: bool = False) -> list[date]:
     """
     Generate the list of monthly investment dates.
 
-    Starting from start_date, produce one date per month on the same day-of-month
-    as start_date (e.g. the 25th), up to and including any month whose target date
-    falls on or before end_date.
+    Default mode: invest on the same day-of-month as start_date every month.
+
+    Birthday mode: first investment on start_date, then on the 1st of every
+    following month. This mirrors how Acorns Early accounts are typically
+    managed — one deposit on the birth date, then regular monthly deposits
+    on the 1st thereafter.
     """
+    import calendar as _cal
+
+    if start_date > end_date:
+        return []
+
+    if birthday_mode:
+        dates = [start_date]
+        m, y = start_date.month + 1, start_date.year
+        if m > 12:
+            m, y = 1, y + 1
+        current = date(y, m, 1)
+        while current <= end_date:
+            dates.append(current)
+            m, y = current.month + 1, current.year
+            if m > 12:
+                m, y = 1, y + 1
+            current = date(y, m, 1)
+        return dates
+
+    # Default: same day-of-month each time
     dates = []
     current = start_date
     while current <= end_date:
         dates.append(current)
-        # Advance by one month, keeping the same day where possible
         month = current.month + 1
         year = current.year
         if month > 12:
             month = 1
             year += 1
-        # Clamp to the last day of the new month (e.g. Jan 31 → Feb 28)
-        import calendar
-        last_day = calendar.monthrange(year, month)[1]
+        last_day = _cal.monthrange(year, month)[1]
         day = min(start_date.day, last_day)
         current = date(year, month, day)
     return dates
@@ -81,6 +101,7 @@ def calculate_dca(
     monthly_amount: float,
     start_date: date,
     end_date: date,
+    birthday_mode: bool = False,
 ) -> Optional[dict]:
     """
     Calculate the outcome of investing `monthly_amount` every month from
@@ -125,7 +146,7 @@ def calculate_dca(
     full_index = pd.date_range(start=closes.index.min(), end=closes.index.max(), freq="D")
     closes = closes.reindex(full_index).ffill()
 
-    investment_days = _investment_dates(start_date, end_date)
+    investment_days = _investment_dates(start_date, end_date, birthday_mode=birthday_mode)
 
     rows = []
     cumulative_shares = 0.0
@@ -181,6 +202,7 @@ def calculate_acorns_dca(
     monthly_amount: float,
     start_date: date,
     end_date: date,
+    birthday_mode: bool = False,
 ) -> Optional[dict]:
     """
     Calculate DCA for an Acorns portfolio by splitting the monthly amount
@@ -203,7 +225,7 @@ def calculate_acorns_dca(
 
     for ticker, weight in weights.items():
         allocated = round(monthly_amount * weight, 6)
-        result = calculate_dca(ticker, allocated, start_date, end_date)
+        result = calculate_dca(ticker, allocated, start_date, end_date, birthday_mode=birthday_mode)
         if result:
             holdings[ticker] = result
         else:
@@ -248,8 +270,11 @@ def calculate_acorns_dca(
 # ---------------------------------------------------------------------------
 
 def should_have_invested(birth_date: date, monthly_contribution: float, end_date: date) -> float:
-    """Total that should have been invested at monthly_contribution/month from birth_date to end_date."""
-    return round(len(_investment_dates(birth_date, end_date)) * monthly_contribution, 2)
+    """Total that should have been invested at monthly_contribution/month from birth_date to end_date.
+
+    Always uses birthday mode: first investment on birth_date, then 1st of each month.
+    """
+    return round(len(_investment_dates(birth_date, end_date, birthday_mode=True)) * monthly_contribution, 2)
 
 
 def generate_catchup_plan(
