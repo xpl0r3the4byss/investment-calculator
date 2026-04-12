@@ -75,6 +75,12 @@ if mode in ("Custom ETFs", "Acorns Portfolio"):
         st.sidebar.caption(
             "Allocation: " + ", ".join(f"{t} {w*100:.0f}%" for t, w in weights.items())
         )
+        birthday_mode = st.sidebar.checkbox(
+            "Birthday investment schedule",
+            value=False,
+            help="First investment on the start date, then on the 1st of each following month. "
+                 "Use this when the start date is a child's birth date.",
+        )
 
     if start_date >= end_date:
         st.sidebar.error("Start date must be before end date.")
@@ -352,7 +358,7 @@ elif mode == "Acorns Portfolio":
         st.stop()
 
     progress = st.progress(0, text="Fetching data…")
-    acorns_result = calculate_acorns_dca(acorns_portfolio, monthly_amount, start_date, end_date)
+    acorns_result = calculate_acorns_dca(acorns_portfolio, monthly_amount, start_date, end_date, birthday_mode=birthday_mode)
     progress.empty()
 
     if acorns_result is None:
