@@ -4,3 +4,7 @@ __pycache__/
 .env
 venv/
 .venv/
+
+# Personal financial data — keep local only after initial empty files are committed
+# To re-include, run: git add -f data/<name>.csv
+data/*.csv
