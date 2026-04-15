@@ -244,14 +244,25 @@ def render_child_page(child: dict) -> None:
     # Compute principal breakdown from raw clean_df (before sign conversion)
     bd = _compute_breakdown(clean_df)
 
+    # If the schedule contains future dates, project to that date instead of today
+    max_sched_date = max(d for d, _ in schedule)
+    as_of = max(today, max_sched_date)
+    is_projection = as_of > today
+
     # ---- Fetch data ----
     progress = st.progress(0, text="Calculating actual portfolio…")
-    actual = calculate_acorns_from_schedule(ACORNS_EARLY_PORTFOLIO, schedule, today)
+    actual = calculate_acorns_from_schedule(ACORNS_EARLY_PORTFOLIO, schedule, as_of)
     progress.progress(60, text="Calculating target portfolio…")
     target = calculate_acorns_dca(
-        ACORNS_EARLY_PORTFOLIO, MONTHLY_TARGET, birth_date, today, birthday_mode=True
+        ACORNS_EARLY_PORTFOLIO, MONTHLY_TARGET, birth_date, as_of, birthday_mode=True
     )
     progress.empty()
+
+    if is_projection:
+        st.info(
+            f"Projection as of **{as_of.strftime('%B %d, %Y')}** — "
+            "future transactions are valued at the latest available market prices."
+        )
 
     if actual is None:
         st.error("Could not fetch price data for the investment dates — check your dates.")
