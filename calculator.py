@@ -153,8 +153,10 @@ def calculate_dca(
 
     for inv_date in investment_days:
         ts = pd.Timestamp(inv_date)
-        if ts < closes.index.min() or ts > closes.index.max():
+        if ts < closes.index.min():
             continue
+        if ts > closes.index.max():
+            ts = closes.index.max()  # future date — use latest available price
         price = float(closes.loc[ts])
         shares = monthly_amount / price
         cumulative_shares += shares
@@ -310,8 +312,10 @@ def _calculate_from_ticker_schedule(
 
     for inv_date, amount in sorted(schedule, key=lambda x: x[0]):
         ts = pd.Timestamp(inv_date)
-        if ts < closes.index.min() or ts > closes.index.max():
+        if ts < closes.index.min():
             continue
+        if ts > closes.index.max():
+            ts = closes.index.max()  # future date — use latest available price
         price = float(closes.loc[ts])
         # Positive = buy, negative = sell
         shares = amount / price
